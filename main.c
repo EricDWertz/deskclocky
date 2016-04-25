@@ -21,6 +21,8 @@
 #define WEATHER_REFRESH_TIMEOUT 600
 int weather_update_timer = WEATHER_REFRESH_TIMEOUT;
 
+cairo_surface_t* temp_surface;
+
 char* weekday_names[7] =
 {
 	"Sunday",
@@ -67,8 +69,22 @@ typedef struct
     char ampm[4];
 } weather_info;
 
+typedef struct
+{
+    int hour;
+    int minute;
+    double sun_altitude;
+    double moon_altitude;
+    double moon_percent;
+} astronomy_info;
+
+//Data is for every 10 minutes so this will cover the whole day
+astronomy_info astro_info[144]; 
+
 //Hourly weather information
 weather_info hourly_info[64];
+
+struct tm * timeinfo;
 
 static size_t write_curl_response( void* ptr, size_t size, size_t nmemb, void* stream )
 {
@@ -85,9 +101,9 @@ static size_t write_curl_response( void* ptr, size_t size, size_t nmemb, void* s
 
     return size * nmemb;
 }
-char* weather_api_request( const char* request )
+
+char* curl_request_data( const char* url )
 {
-    char url[512];
     CURL* curl = curl_easy_init();
     CURLcode status;
     char *data;
@@ -101,8 +117,6 @@ char* weather_api_request( const char* request )
         .pos = 0,
     };
 
-    sprintf( url, "%s%s%s", URL_BASE, request, URL_POSTFIX );
-    printf( url );
     curl_easy_setopt( curl, CURLOPT_URL, url );
     curl_easy_setopt( curl, CURLOPT_WRITEFUNCTION, write_curl_response );
     curl_easy_setopt( curl, CURLOPT_WRITEDATA, &write_result );
@@ -127,11 +141,239 @@ char* weather_api_request( const char* request )
 
     /* zero-terminate the result */
     data[write_result.pos] = '\0';
+
     return data;
+}
+
+char* weather_api_request( const char* request )
+{
+    char url[512];
+
+    sprintf( url, "%s%s%s", URL_BASE, request, URL_POSTFIX );
+    printf( url );
+
+    return curl_request_data( url );
+}
+
+void update_astronomy()
+{
+    char url[512];
+    char* data;
+    char* line;
+    char temp[64];
+
+    int hour, minute;
+    int i, j;
+
+    //clear existing data
+    for( i = 0; i < 144; i ++ )
+    {
+        astro_info[i].sun_altitude = -180.0;
+        astro_info[i].moon_altitude = -180.0;
+    }
+
+    int found_table = 0;
+    int found_altitude;
+    // http://aa.usno.navy.mil/cgi-bin/aa_altazw.pl?form=1&body=10&year=2016&month=4&day=25&intv_mag=10&state=PA&place=Cresson
+    
+    //Sun data
+    sprintf( url, "http://aa.usno.navy.mil/cgi-bin/aa_altazw.pl?form=1&body=10&year=%i&month=%i&day=%i&intv_mag=10&state=PA&place=Cresson",
+            timeinfo->tm_year + 1900,
+            timeinfo->tm_mon + 1,
+            timeinfo->tm_mday );
+
+    data = curl_request_data( url );
+
+    line = strtok( data, "\n" );
+    while( line )
+    {
+        if( found_table )
+        {
+            memset( temp, 0, 64 );
+            strncpy( temp, line, strlen( "     " ) );
+            if( strcmp( temp, "     " ) == 0 )
+            {
+                line = strtok( NULL, "\n" );
+                continue;
+            }
+
+            memset( temp, 0, 64 );
+            strncpy( temp, line, strlen( "</pre>" ) );
+            if( strcmp( temp, "</pre>" ) == 0 )
+            {
+                break;
+            }
+
+            memset( temp, 0, 10 );
+            strncpy( temp, line, 2 ); //copy hour info
+            hour = atoi( temp );
+            memset( temp, 0, 10 );
+            strncpy( temp, line + 3, 2 ); //copy minute info
+            minute = atoi( temp );
+
+            memset( temp, 0, 10 );
+            j = 0;
+            found_altitude = 0;
+            for( i = 5; line[i] != '\n'; i++ )
+            {
+                if( line[i] != ' ' ) 
+                {
+                    if( !found_altitude )
+                        found_altitude = 1;
+
+                    temp[j++] = line[i];
+                }
+                else
+                {
+                    if( found_altitude )
+                        break;
+                }
+            }
+
+            int index = hour * 6 + ( minute / 10 );
+            astro_info[index].sun_altitude = strtod( temp, NULL );
+            printf( "Time: %i Altitude: %f\n", index, astro_info[index].sun_altitude );
+        }
+        else
+        {
+            memset( temp, 0, 64 );
+            strncpy( temp, line, strlen( " h  m" ) );
+            if( strcmp( temp, " h  m" ) == 0 )
+            {
+                found_table = 1;
+            }
+        }
+
+        line = strtok( NULL, "\n" );
+    }
+    free( data );
+
+    sprintf( url, "http://aa.usno.navy.mil/cgi-bin/aa_altazw.pl?form=1&body=11&year=%i&month=%i&day=%i&intv_mag=10&state=PA&place=Cresson",
+            timeinfo->tm_year + 1900,
+            timeinfo->tm_mon + 1,
+            timeinfo->tm_mday );
+
+    data = curl_request_data( url );
+
+    line = strtok( data, "\n" );
+    found_table = 0;
+    int found_value = 0;
+    int break_value = 0;
+    while( line )
+    {
+        if( found_table )
+        {
+            memset( temp, 0, 64 );
+            strncpy( temp, line, strlen( "     " ) );
+            if( strcmp( temp, "     " ) == 0 )
+            {
+                line = strtok( NULL, "\n" );
+                continue;
+            }
+
+            memset( temp, 0, 64 );
+            strncpy( temp, line, strlen( "</pre>" ) );
+            if( strcmp( temp, "</pre>" ) == 0 )
+            {
+                break;
+            }
+
+            memset( temp, 0, 10 );
+            strncpy( temp, line, 2 ); //copy hour info
+            hour = atoi( temp );
+            memset( temp, 0, 10 );
+            strncpy( temp, line + 3, 2 ); //copy minute info
+            minute = atoi( temp );
+
+            int index = hour * 6 + ( minute / 10 );
+
+            memset( temp, 0, 10 );
+            j = 0;
+            found_value = 0;
+            for( i = 5; line[i] != '\n'; i++ )
+            {
+                if( line[i] != ' ' ) 
+                {
+                    if( !found_value )
+                        found_value = 1;
+
+                    temp[j++] = line[i];
+                }
+                else
+                {
+                    if( found_value )
+                    {
+                        break_value = i;
+                        break;
+                    }
+                }
+            }
+            astro_info[index].moon_altitude = strtod( temp, NULL );
+
+            memset( temp, 0, 10 );
+            j = 0;
+            found_value = 0;
+            for( i = break_value; line[i] != '\n'; i++ )
+            {
+                if( line[i] != ' ' ) 
+                {
+                    if( !found_value )
+                        found_value = 1;
+
+                    temp[j++] = line[i];
+                }
+                else
+                {
+                    if( found_value )
+                    {
+                        break_value = i;
+                        break;
+                    }
+                }
+            }
+
+            memset( temp, 0, 10 );
+            j = 0;
+            found_value = 0;
+            for( i = break_value; line[i] != '\n'; i++ )
+            {
+                if( line[i] != ' ' ) 
+                {
+                    if( !found_value )
+                        found_value = 1;
+
+                    temp[j++] = line[i];
+                }
+                else
+                {
+                    if( found_value )
+                    {
+                        break_value = i;
+                        break;
+                    }
+                }
+            }
+
+            astro_info[index].moon_percent = strtod( temp, NULL );
+            printf( "Moon Time: %i Altitude: %f Percent %f\n", index, astro_info[index].moon_altitude, astro_info[index].moon_percent );
+        }
+        else
+        {
+            memset( temp, 0, 64 );
+            strncpy( temp, line, strlen( " h  m" ) );
+            if( strcmp( temp, " h  m" ) == 0 )
+            {
+                found_table = 1;
+            }
+        }
+        line = strtok( NULL, "\n" );
+    }
 }
 
 void update_weather()
 {
+    update_astronomy(); 
+
     char* data = weather_api_request( "hourly" );
 
     //Now do the JSON stuff
@@ -235,16 +477,105 @@ void draw_weather_icon( cairo_t* cr, double x, double y, int info_index )
     cairo_fill( cr );
 }
 
+void draw_sun_line( cairo_t* cr )
+{
+    int i;
+    double x = 0;
+    double y = WINDOW_HEIGHT - GRID_SIZE;
+    int line_start = 0;
+    cairo_move_to( cr, x, y );
+    for( i = 0; i < 144; i++ )
+    {
+        if( astro_info[i].sun_altitude < -20.0 )
+            continue;
+        else
+        {
+            if( !line_start )
+            {
+                x = (double)i * ((double)WINDOW_WIDTH / 143.0);
+                y = WINDOW_HEIGHT - GRID_SIZE - ( astro_info[i].sun_altitude / 90.0 ) * ( WINDOW_HEIGHT - GRID_SIZE * 2.0 );
+                cairo_move_to( cr, x, y );
+            }
+            line_start = 1;
+        }
+
+        x = (double)i * ((double)WINDOW_WIDTH / 143.0);
+        y = WINDOW_HEIGHT - GRID_SIZE - ( astro_info[i].sun_altitude / 90.0 ) * ( WINDOW_HEIGHT - GRID_SIZE * 2.0 );
+        cairo_line_to( cr, x, y );
+    } 
+}
+
+void draw_moon_line( cairo_t* cr )
+{
+    int i;
+    double x = 0;
+    double y = WINDOW_HEIGHT - GRID_SIZE;
+    int line_start = 0;
+    cairo_move_to( cr, x, y );
+    for( i = 0; i < 144; i++ )
+    {
+        if( astro_info[i].moon_altitude < -20.0 )
+            continue;
+        else
+        {
+            if( !line_start )
+
+            {
+                x = (double)i * ((double)WINDOW_WIDTH / 143.0);
+                y = WINDOW_HEIGHT - GRID_SIZE - ( astro_info[i].moon_altitude / 90.0 ) * ( WINDOW_HEIGHT - GRID_SIZE * 2.0 );
+                cairo_move_to( cr, x, y );
+            }
+            line_start = 1;
+        }
+
+        x = (double)i * ((double)WINDOW_WIDTH / 143.0);
+        y = WINDOW_HEIGHT - GRID_SIZE - ( astro_info[i].moon_altitude / 90.0 ) * ( WINDOW_HEIGHT - GRID_SIZE * 2.0 );
+        cairo_line_to( cr, x, y );
+    } 
+
+}
+/*
+ * This function draws the moon and sun lines
+ */
+void draw_astronomy_lines( cairo_t* cr )
+{
+    cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
+    cairo_set_line_width( cr, 8.0 );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
+    draw_sun_line( cr );
+    cairo_stroke( cr );
+
+    cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
+    cairo_set_line_width( cr, 4.0 );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.5 );
+    draw_sun_line( cr );
+    cairo_stroke( cr );
+
+    cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
+    cairo_set_line_width( cr, 8.0 );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
+    draw_moon_line( cr );
+    cairo_stroke( cr );
+
+    cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
+    cairo_set_line_width( cr, 4.0 );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.5 );
+    draw_moon_line( cr );
+    cairo_stroke( cr );
+
+    cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
+    cairo_rectangle( cr, 0, WINDOW_HEIGHT - GRID_SIZE, WINDOW_WIDTH, GRID_SIZE );
+    cairo_fill( cr );
+
+    cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
+}
+
 /*
  * This function draws the time and date strings, I have a feeling thought that it will soon draw everything
  */
 void draw_timestring( cairo_t* cr )
 {
-    time_t rawtime;
-    struct tm * timeinfo;
-
-    time ( &rawtime );
-    timeinfo = localtime ( &rawtime );
     //tm_sec tm_min tm_hour
     int hour=timeinfo->tm_hour;
     int minute=timeinfo->tm_min;
@@ -261,11 +592,21 @@ void draw_timestring( cairo_t* cr )
     	hour=12;
     }
     
-    cairo_set_font_face(cr,cairo_toy_font_face_create("Source Sans Pro ExtraLight",CAIRO_FONT_SLANT_NORMAL,CAIRO_FONT_WEIGHT_NORMAL));
+    cairo_set_font_face(cr,cairo_toy_font_face_create("Source Sans Pro Light",CAIRO_FONT_SLANT_NORMAL,CAIRO_FONT_WEIGHT_NORMAL));
     cairo_text_extents_t extents;
     double text_x, text_y;
     double time_width = 0;
 
+
+    cairo_t* tempcr = cairo_create( temp_surface );
+    cairo_set_operator( tempcr, CAIRO_OPERATOR_SOURCE );
+    cairo_set_source_rgba( tempcr, 0.0, 0.0, 0.0, 0.0 );
+    cairo_paint( tempcr );
+    draw_astronomy_lines( tempcr );
+    cairo_destroy( tempcr );
+
+    cairo_set_source_surface( cr, temp_surface, 0, 0 );
+    cairo_paint( cr );
 
     /*
      * This part draws the background rectangles
@@ -348,6 +689,11 @@ gboolean draw( GtkWidget* widget, cairo_t* cr, gpointer user )
 
 gboolean refresh_clock(gpointer data)
 {
+    time_t rawtime;
+
+    time ( &rawtime );
+    timeinfo = localtime ( &rawtime );
+
     weather_update_timer--;
     if( weather_update_timer < 0 )
     {
@@ -355,6 +701,7 @@ gboolean refresh_clock(gpointer data)
         update_weather();
     }
     tick = !tick;
+
     gtk_widget_queue_draw(window);
     return TRUE;
 }
@@ -367,6 +714,8 @@ static void clicked(GtkWindow *win, GdkEventButton *event, gpointer user_data)
 
 int main( int argc, char **argv )
 {
+    time_t rawtime;
+
     gtk_init( &argc, &argv );
 
     //Get screen width
@@ -394,9 +743,13 @@ int main( int argc, char **argv )
     gtk_window_set_type_hint(GTK_WINDOW(window),GDK_WINDOW_TYPE_HINT_DIALOG);
     g_signal_connect(G_OBJECT(window), "button-press-event", G_CALLBACK(clicked), NULL);
 
+    time ( &rawtime );
+    timeinfo = localtime ( &rawtime );
+
     g_timeout_add_seconds(1,refresh_clock,NULL);
 
     update_weather();
+    temp_surface = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, WINDOW_WIDTH, WINDOW_HEIGHT );
 
     gtk_widget_show_all(window);
     gtk_main();
