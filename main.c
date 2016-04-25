@@ -3,12 +3,23 @@
 #include <time.h>
 #include <math.h>
 #include <stdint.h>
+#include <string.h>
+
+#include <curl/curl.h>
+#include <jansson.h>
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 800
 
 #define FONT_SIZE 64.0
 #define GRID_SIZE FONT_SIZE*1.5
+
+#define URL_BASE "http://api.wunderground.com/api/565b48be709c806d/"
+#define URL_POSTFIX "/q/40.4598,-78.5917.json"
+
+//10 minute timeout to refresh weather info
+#define WEATHER_REFRESH_TIMEOUT 600
+int weather_update_timer = WEATHER_REFRESH_TIMEOUT;
 
 char* weekday_names[7] =
 {
@@ -42,6 +53,140 @@ GdkPixbuf* background_pixbuf;
 
 int tick = 0;
 
+struct write_result
+{
+    char* data;
+    int pos;
+};
+
+typedef struct
+{
+    int hour;
+    int temp;
+    int code;
+    char ampm[4];
+} weather_info;
+
+//Hourly weather information
+weather_info hourly_info[64];
+
+static size_t write_curl_response( void* ptr, size_t size, size_t nmemb, void* stream )
+{
+    struct write_result *result = (struct write_result *)stream;
+
+    if(result->pos + size * nmemb >= 1000000 - 1)
+    {
+        fprintf(stderr, "error: too small buffer\n");
+        return 0;
+    }
+
+    memcpy(result->data + result->pos, ptr, size * nmemb);
+    result->pos += size * nmemb;
+
+    return size * nmemb;
+}
+char* weather_api_request( const char* request )
+{
+    char url[512];
+    CURL* curl = curl_easy_init();
+    CURLcode status;
+    char *data;
+    data = (char*)malloc(1000000);
+
+    if( !curl )
+        NULL;
+
+    struct write_result write_result = {
+        .data = data,
+        .pos = 0,
+    };
+
+    sprintf( url, "%s%s%s", URL_BASE, request, URL_POSTFIX );
+    printf( url );
+    curl_easy_setopt( curl, CURLOPT_URL, url );
+    curl_easy_setopt( curl, CURLOPT_WRITEFUNCTION, write_curl_response );
+    curl_easy_setopt( curl, CURLOPT_WRITEDATA, &write_result );
+
+    status = curl_easy_perform(curl);
+    if(status != 0)
+    {
+        fprintf(stderr, "error: unable to request data from %s:\n", url );
+        fprintf(stderr, "%s\n", curl_easy_strerror(status));
+        return NULL;
+    }
+
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    if(status != 200)
+    {
+        fprintf(stderr, "error: server responded with code %ld\n", curl_easy_strerror(status) );
+        return NULL;
+    }
+
+    curl_easy_cleanup(curl);
+    curl_global_cleanup();
+
+    /* zero-terminate the result */
+    data[write_result.pos] = '\0';
+    return data;
+}
+
+void update_weather()
+{
+    char* data = weather_api_request( "hourly" );
+
+    //Now do the JSON stuff
+    json_error_t error;
+    json_t* root = json_loads( data, 0, &error );
+    free( data );
+
+    //JSON structure
+    // hourly_forecast
+    //  - FCTTIME
+    //     - hour
+    //     - min
+    //  - temp
+    //     - english: fahrenheit
+    //     - condition
+    json_t* forecasts = json_object_get( root, "hourly_forecast" );
+
+    json_t *temp, *english, *array_data, *time;
+    for( int i=0; i < json_array_size( forecasts ); i++ )
+    {
+        array_data = json_array_get( forecasts, i );
+
+        temp = json_object_get( array_data, "temp" );
+        english = json_object_get( temp, "english" );
+
+        int temp = atoi( json_string_value( english ) );
+
+        time = json_object_get( array_data, "FCTTIME" );
+        int hour = atoi( json_string_value( json_object_get( time, "hour" ) ) ); 
+        if( hour >= 12 )
+            hour -= 12;
+        if( hour == 0 ) hour = 12;
+        int minute = atoi( json_string_value( json_object_get( time, "min" ) ) ); 
+        const char* ampm = json_string_value( json_object_get( time, "ampm" ) );
+        hourly_info[i+1].ampm[1] = 'm'; hourly_info[i+1].ampm[2] = '\0';
+        if( ampm[0] == 'A' )
+            hourly_info[i+1].ampm[0] = 'a';
+        else
+            hourly_info[i+1].ampm[0] = 'p';
+
+        printf( "time: %i%s temp: %i\n", hour, hourly_info[i+1].ampm, temp );
+        hourly_info[i+1].hour = hour;
+        hourly_info[i+1].temp = temp;
+    }
+
+    data = weather_api_request( "conditions" );
+    printf( data );
+    root = json_loads( data, 0, &error );
+    free( data );
+
+    json_t* observation = json_object_get( root, "current_observation" );
+    hourly_info[0].temp = (int)json_real_value( json_object_get( observation, "temp_f" ) );
+
+}
+
 void load_background_pixbuf( const char* path )
 {
     GError* error=NULL;
@@ -52,6 +197,42 @@ void load_background_pixbuf( const char* path )
 		printf("Error loading background %s\n%s\n",error->message);
 		g_error_free(error);
 	}
+}
+
+void draw_weather_icon( cairo_t* cr, double x, double y, int info_index )
+{
+    char buffer[64];
+    int text_x, text_y;
+    cairo_text_extents_t extents;
+    weather_info* info = &hourly_info[info_index];
+
+    cairo_set_font_size( cr, FONT_SIZE * 0.375 );
+    cairo_move_to( cr, x, y );
+    sprintf( buffer, "%i%s", info->hour, info->ampm );
+    if( info_index == 0 ) strcpy( buffer, "now" );
+    cairo_text_path( cr, buffer );
+    cairo_fill( cr );
+
+    text_x = x + GRID_SIZE * 0.75;
+    text_y = y - GRID_SIZE * 0.5;
+
+    cairo_set_font_size( cr, FONT_SIZE * 0.5 );
+    sprintf( buffer,"%i", info->temp);
+    cairo_text_extents( cr, buffer, &extents );
+    cairo_move_to( cr, text_x, text_y );
+    cairo_text_path( cr, buffer );
+    cairo_fill( cr );
+
+    text_x += extents.width + extents.x_bearing;
+    text_y -= extents.height;
+
+    strcpy( buffer, "°F" );
+    cairo_set_font_size( cr, FONT_SIZE * 0.25 );
+    cairo_text_extents( cr, buffer, &extents );
+    text_y += extents.height; 
+    cairo_move_to( cr, text_x, text_y );
+    cairo_text_path( cr, buffer );
+    cairo_fill( cr );
 }
 
 /*
@@ -86,11 +267,27 @@ void draw_timestring( cairo_t* cr )
     double time_width = 0;
 
 
+    /*
+     * This part draws the background rectangles
+     * TODO: make it so the shade rectangles are drawn on their own surface then overlayed on the background pixbuf
+     */
     cairo_set_source_rgba( cr, 0.0, 0.0, 0.0, 0.75 );
-    cairo_rectangle( cr, GRID_SIZE, (WINDOW_HEIGHT*0.5) - GRID_SIZE * 3.0, WINDOW_WIDTH - (GRID_SIZE * 2.0), GRID_SIZE * 3.5 );
+    cairo_rectangle( cr, GRID_SIZE, (WINDOW_HEIGHT*0.5) - GRID_SIZE * 3.0, WINDOW_WIDTH - (GRID_SIZE * 2.0), GRID_SIZE * 4.5 );
+    //Draw Bottom rect
+    cairo_rectangle( cr, 0, WINDOW_HEIGHT - GRID_SIZE, WINDOW_WIDTH, GRID_SIZE );
     cairo_fill( cr );
 
     cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.75 );
+
+    double x_move = GRID_SIZE * 2.0;
+    double x = WINDOW_WIDTH*0.5 - ( GRID_SIZE * 5.0 );
+    int i;
+    int delta_hour = 3;
+    for( i = 0; i < 5; i++ )
+    {
+        draw_weather_icon( cr, x, WINDOW_HEIGHT - FONT_SIZE * 0.25, i*delta_hour );
+        x+= x_move;
+    }
 
     char timestring[64];
     char ampmstring[6];
@@ -151,6 +348,12 @@ gboolean draw( GtkWidget* widget, cairo_t* cr, gpointer user )
 
 gboolean refresh_clock(gpointer data)
 {
+    weather_update_timer--;
+    if( weather_update_timer < 0 )
+    {
+        weather_update_timer = WEATHER_REFRESH_TIMEOUT;
+        update_weather();
+    }
     tick = !tick;
     gtk_widget_queue_draw(window);
     return TRUE;
@@ -192,6 +395,8 @@ int main( int argc, char **argv )
     g_signal_connect(G_OBJECT(window), "button-press-event", G_CALLBACK(clicked), NULL);
 
     g_timeout_add_seconds(1,refresh_clock,NULL);
+
+    update_weather();
 
     gtk_widget_show_all(window);
     gtk_main();
