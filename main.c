@@ -441,6 +441,32 @@ void load_background_pixbuf( const char* path )
 	}
 }
 
+void draw_sun_icon( cairo_t* cr, double x, double y, double r )
+{
+    int i;
+    cairo_set_line_width( cr, 2.0 );
+    cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
+    cairo_arc( cr, x, y, r, 0, 2.0 * M_PI );
+    cairo_fill( cr );
+
+    cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.75 );
+    cairo_arc( cr, x, y, r * 0.5, 0, 2.0 * M_PI );
+
+    double r1, r2, a;
+    r1 = r * 0.625;
+    r2 = r;
+    for( i = 0; i < 8; i++ )
+    {
+        a = i * M_PI / 4.0;
+        cairo_move_to( cr, x + cos( a ) * r1, y + sin( a ) * r1 );
+        cairo_line_to( cr, x + cos( a ) * r, y + sin( a ) * r );
+    }
+
+    cairo_stroke( cr );
+}
+
 void draw_weather_icon( cairo_t* cr, double x, double y, int info_index )
 {
     char buffer[64];
@@ -551,6 +577,12 @@ void draw_astronomy_lines( cairo_t* cr )
     draw_sun_line( cr );
     cairo_stroke( cr );
 
+    //Draw the sun icon
+    double hour = (double)timeinfo->tm_hour * 6.0 + ( (double)timeinfo->tm_min / 10.0 );
+    int hour_min = floor( hour );
+    int hour_max = ceil( hour );
+    printf( "Current hour: %f\n", hour );
+
     cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
     cairo_set_line_width( cr, 8.0 );
     cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
@@ -607,6 +639,8 @@ void draw_timestring( cairo_t* cr )
 
     cairo_set_source_surface( cr, temp_surface, 0, 0 );
     cairo_paint( cr );
+
+    draw_sun_icon( cr, 100, 100, FONT_SIZE * 0.5 );
 
     /*
      * This part draws the background rectangles
