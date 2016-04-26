@@ -20,6 +20,8 @@ GdkPixbuf* background_pixbuf;
 
 int tick = 0;
 
+time_t time_start;
+
 struct write_result
 {
     char* data;
@@ -50,6 +52,10 @@ astronomy_info astro_info[144];
 weather_info hourly_info[64];
 
 struct tm * timeinfo;
+struct tm * timeinfo_previous;
+
+int timer_update_astronomy = 0;
+int timer_update_weather = 1;
 
 static size_t write_curl_response( void* ptr, size_t size, size_t nmemb, void* stream )
 {
@@ -337,8 +343,6 @@ void update_astronomy()
 
 void update_weather()
 {
-    update_astronomy(); 
-
     char* data = weather_api_request( "hourly" );
 
     //Now do the JSON stuff
@@ -406,20 +410,48 @@ void load_background_pixbuf( const char* path )
 	}
 }
 
+void draw_moon_icon( cairo_t* cr, double x, double y, double r, double percent )
+{
+    double half_width = r * 0.5;
+    cairo_set_line_width( cr, 8.0 );
+    cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
+    cairo_arc( cr, x, y, r*0.5 + 4.0, 0, 2.0 * M_PI );
+    cairo_fill( cr );
+
+    cairo_set_line_width( cr, 2.0 );
+    cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.75 );
+    cairo_arc( cr, x, y, r*0.5, 0, 2.0 * M_PI );
+    cairo_stroke( cr );
+}
+
 void draw_sun_icon( cairo_t* cr, double x, double y, double r )
 {
     int i;
-    cairo_set_line_width( cr, 2.0 );
+    double r1, r2, a;
+
+    cairo_set_line_width( cr, 8.0 );
     cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
     cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
-    cairo_arc( cr, x, y, r + 8.0, 0, 2.0 * M_PI );
+    cairo_arc( cr, x, y, r*0.5 + 4.0, 0, 2.0 * M_PI );
     cairo_fill( cr );
 
+    r1 = r * 0.625;
+    r2 = r;
+    for( i = 0; i < 8; i++ )
+    {
+        a = i * M_PI / 4.0;
+        cairo_move_to( cr, x + cos( a ) * r1, y + sin( a ) * r1 );
+        cairo_line_to( cr, x + cos( a ) * r, y + sin( a ) * r );
+    }
+    cairo_stroke( cr );
+
+    cairo_set_line_width( cr, 2.0 );
     cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
     cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.75 );
     cairo_arc( cr, x, y, r * 0.5, 0, 2.0 * M_PI );
 
-    double r1, r2, a;
     r1 = r * 0.625;
     r2 = r;
     for( i = 0; i < 8; i++ )
@@ -530,27 +562,16 @@ void draw_moon_line( cairo_t* cr )
  */
 void draw_astronomy_lines( cairo_t* cr )
 {
-    cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
-    cairo_set_line_width( cr, 8.0 );
-    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
-    draw_sun_line( cr );
-    cairo_stroke( cr );
-
-    cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
-    cairo_set_line_width( cr, 4.0 );
-    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.5 );
-    draw_sun_line( cr );
-    cairo_stroke( cr );
-
-    //Draw the sun icon
+    double sun_x, sun_y, altitude;
+    
+    //timekeeping
     double hour = (double)timeinfo->tm_hour * 6.0 + ( (double)timeinfo->tm_min / 10.0 );
     int hour_min = floor( hour );
     int hour_max = ceil( hour );
     if( hour_max > 143 ) hour_max = 143;
 
-
     cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
-    cairo_set_line_width( cr, 8.0 );
+    cairo_set_line_width( cr, 16.0 );
     cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
     draw_moon_line( cr );
     cairo_stroke( cr );
@@ -562,16 +583,34 @@ void draw_astronomy_lines( cairo_t* cr )
     cairo_stroke( cr );
 
     cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
+    cairo_set_line_width( cr, 16.0 );
     cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
-    cairo_rectangle( cr, 0, WINDOW_HEIGHT - GRID_SIZE, WINDOW_WIDTH, GRID_SIZE );
-    cairo_fill( cr );
+    draw_sun_line( cr );
+    cairo_stroke( cr );
 
-    double sun_x, sun_y, altitude;
+    cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
+    cairo_set_line_width( cr, 4.0 );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.5 );
+    draw_sun_line( cr );
+    cairo_stroke( cr );
+
+    //draw moon
+    altitude = astro_info[hour_min].moon_altitude + ( astro_info[hour_max].moon_altitude - astro_info[hour_min].moon_altitude ) * (hour - hour_min );
+    sun_x = hour * ((double)WINDOW_WIDTH / 143.0);
+    sun_y = WINDOW_HEIGHT - GRID_SIZE - ( altitude / 90.0 ) * ( WINDOW_HEIGHT - GRID_SIZE * 2.0 );
+    draw_moon_icon( cr, sun_x, sun_y, FONT_SIZE * 0.5, 1.0 );
+
+    //draw sun over the moon
     altitude = astro_info[hour_min].sun_altitude + ( astro_info[hour_max].sun_altitude - astro_info[hour_min].sun_altitude ) * (hour - hour_min );
     sun_x = hour * ((double)WINDOW_WIDTH / 143.0);
     sun_y = WINDOW_HEIGHT - GRID_SIZE - ( altitude / 90.0 ) * ( WINDOW_HEIGHT - GRID_SIZE * 2.0 );
     draw_sun_icon( cr, sun_x, sun_y, FONT_SIZE * 0.5 );
 
+    cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
+    cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
+    cairo_rectangle( cr, 0, WINDOW_HEIGHT - GRID_SIZE, WINDOW_WIDTH, GRID_SIZE );
+    cairo_fill( cr );
+    
     cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
 }
 
@@ -695,16 +734,29 @@ gboolean refresh_clock(gpointer data)
 {
     time_t rawtime;
 
-    time ( &rawtime );
-    //timeinfo = localtime ( &rawtime );
-    timeinfo->tm_min+=1;
-    if( timeinfo->tm_min > 59 )
+    int previous_hour = timeinfo->tm_hour;
+    if( !DEBUG_TIMESCALE )
     {
-        timeinfo->tm_min = 0;
-        timeinfo->tm_hour += 1;
-        if( timeinfo->tm_hour > 23 )
-            timeinfo->tm_hour = 0;
+        time ( &rawtime );
+        timeinfo = localtime ( &rawtime );
     }
+    else
+    {
+        time_start += 180; 
+        timeinfo = localtime( &time_start );
+    }
+
+    if( previous_hour == 23 && timeinfo->tm_hour == 0 )
+    {
+        if( !timer_update_astronomy )
+        {
+            update_astronomy();
+            timer_update_astronomy = 1;
+        }
+    }
+    else
+        timer_update_astronomy = 0;
+
 
     weather_update_timer--;
     if( weather_update_timer < 0 )
@@ -757,10 +809,14 @@ int main( int argc, char **argv )
 
     time ( &rawtime );
     timeinfo = localtime ( &rawtime );
+    time_start = rawtime;
 
-    //g_timeout_add_seconds(1,refresh_clock,NULL);
-    g_timeout_add( 100, refresh_clock, NULL );
+    if( !DEBUG_TIMESCALE )
+        g_timeout_add_seconds(1,refresh_clock,NULL);
+    else
+        g_timeout_add( 100, refresh_clock, NULL );
 
+    update_astronomy();
     update_weather();
     temp_surface = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, WINDOW_WIDTH, WINDOW_HEIGHT );
 
