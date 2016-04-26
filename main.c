@@ -8,47 +8,12 @@
 #include <curl/curl.h>
 #include <jansson.h>
 
-#define WINDOW_WIDTH 1280
-#define WINDOW_HEIGHT 800
+#include "config.h"
 
-#define FONT_SIZE 64.0
-#define GRID_SIZE FONT_SIZE*1.5
-
-#define URL_BASE "http://api.wunderground.com/api/565b48be709c806d/"
-#define URL_POSTFIX "/q/40.4598,-78.5917.json"
-
-//10 minute timeout to refresh weather info
-#define WEATHER_REFRESH_TIMEOUT 600
 int weather_update_timer = WEATHER_REFRESH_TIMEOUT;
 
 cairo_surface_t* temp_surface;
 
-char* weekday_names[7] =
-{
-	"Sunday",
-	"Monday",
-	"Tuesday",
-	"Wednesday",
-	"Thursday",
-	"Friday",
-	"Saturday"
-};
-
-char* month_names[12] =
-{
-	"January",
-	"February",
-	"March",
-	"April",
-	"May",
-	"June",
-	"July",
-	"August",
-	"September",
-	"October",
-	"November",
-	"December"
-};
 
 GtkWidget* window;
 GdkPixbuf* background_pixbuf;
@@ -447,7 +412,7 @@ void draw_sun_icon( cairo_t* cr, double x, double y, double r )
     cairo_set_line_width( cr, 2.0 );
     cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
     cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
-    cairo_arc( cr, x, y, r, 0, 2.0 * M_PI );
+    cairo_arc( cr, x, y, r + 8.0, 0, 2.0 * M_PI );
     cairo_fill( cr );
 
     cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
@@ -581,7 +546,8 @@ void draw_astronomy_lines( cairo_t* cr )
     double hour = (double)timeinfo->tm_hour * 6.0 + ( (double)timeinfo->tm_min / 10.0 );
     int hour_min = floor( hour );
     int hour_max = ceil( hour );
-    printf( "Current hour: %f\n", hour );
+    if( hour_max > 143 ) hour_max = 143;
+
 
     cairo_set_operator( cr, CAIRO_OPERATOR_SOURCE );
     cairo_set_line_width( cr, 8.0 );
@@ -599,6 +565,12 @@ void draw_astronomy_lines( cairo_t* cr )
     cairo_set_source_rgba( cr, 1.0, 1.0, 1.0, 0.0 );
     cairo_rectangle( cr, 0, WINDOW_HEIGHT - GRID_SIZE, WINDOW_WIDTH, GRID_SIZE );
     cairo_fill( cr );
+
+    double sun_x, sun_y, altitude;
+    altitude = astro_info[hour_min].sun_altitude + ( astro_info[hour_max].sun_altitude - astro_info[hour_min].sun_altitude ) * (hour - hour_min );
+    sun_x = hour * ((double)WINDOW_WIDTH / 143.0);
+    sun_y = WINDOW_HEIGHT - GRID_SIZE - ( altitude / 90.0 ) * ( WINDOW_HEIGHT - GRID_SIZE * 2.0 );
+    draw_sun_icon( cr, sun_x, sun_y, FONT_SIZE * 0.5 );
 
     cairo_set_operator( cr, CAIRO_OPERATOR_OVER );
 }
@@ -639,8 +611,6 @@ void draw_timestring( cairo_t* cr )
 
     cairo_set_source_surface( cr, temp_surface, 0, 0 );
     cairo_paint( cr );
-
-    draw_sun_icon( cr, 100, 100, FONT_SIZE * 0.5 );
 
     /*
      * This part draws the background rectangles
@@ -726,7 +696,15 @@ gboolean refresh_clock(gpointer data)
     time_t rawtime;
 
     time ( &rawtime );
-    timeinfo = localtime ( &rawtime );
+    //timeinfo = localtime ( &rawtime );
+    timeinfo->tm_min+=1;
+    if( timeinfo->tm_min > 59 )
+    {
+        timeinfo->tm_min = 0;
+        timeinfo->tm_hour += 1;
+        if( timeinfo->tm_hour > 23 )
+            timeinfo->tm_hour = 0;
+    }
 
     weather_update_timer--;
     if( weather_update_timer < 0 )
@@ -761,7 +739,7 @@ int main( int argc, char **argv )
      * Load test pixbuf
      * TODO: Make this so it randomly selects images from a directory based on current time of day/sun state
      */
-    load_background_pixbuf( "test.jpg" );
+    load_background_pixbuf( "/home/eric/deskclocky/test.jpg" );
 
     window = gtk_window_new( GTK_WINDOW_TOPLEVEL );
     gtk_window_set_title(GTK_WINDOW(window), "Alpha Demo");
@@ -780,7 +758,8 @@ int main( int argc, char **argv )
     time ( &rawtime );
     timeinfo = localtime ( &rawtime );
 
-    g_timeout_add_seconds(1,refresh_clock,NULL);
+    //g_timeout_add_seconds(1,refresh_clock,NULL);
+    g_timeout_add( 100, refresh_clock, NULL );
 
     update_weather();
     temp_surface = cairo_image_surface_create( CAIRO_FORMAT_ARGB32, WINDOW_WIDTH, WINDOW_HEIGHT );
