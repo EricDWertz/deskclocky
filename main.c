@@ -773,7 +773,7 @@ int main( int argc, char **argv )
     gtk_window_set_decorated(GTK_WINDOW(window), FALSE);
     gtk_widget_set_size_request(window,WINDOW_WIDTH,WINDOW_HEIGHT);
     gtk_widget_add_events(window, GDK_BUTTON_PRESS_MASK);
-    gtk_window_move(GTK_WINDOW(window),screen_width-WINDOW_WIDTH* 0.25,screen_height-WINDOW_HEIGHT* 0.25);
+    gtk_window_move( GTK_WINDOW(window), 0, 0 );
     gtk_window_set_type_hint(GTK_WINDOW(window),GDK_WINDOW_TYPE_HINT_DIALOG);
     g_signal_connect(G_OBJECT(window), "button-press-event", G_CALLBACK(clicked), NULL);
 
