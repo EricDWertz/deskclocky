@@ -15,6 +15,9 @@
 #define WEATHER_REFRESH_TIMEOUT 600
 
 #define DEBUG_TIMESCALE 0
+#define DEBUG_BRIGHTNESS 1
+
+#define LIGHTSENSOR_FILE "/sys/buf/i2c/drivers//al3010/2-001c/show_revised_lux"
 
 char* weekday_names[7] =
 {

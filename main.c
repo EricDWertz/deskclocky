@@ -4,6 +4,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 
 #include <curl/curl.h>
 #include <jansson.h>
@@ -21,6 +22,8 @@ GdkPixbuf* background_pixbuf;
 int tick = 0;
 
 time_t time_start;
+
+double brightness;
 
 struct write_result
 {
@@ -56,6 +59,24 @@ struct tm * timeinfo_previous;
 
 int timer_update_astronomy = 0;
 int timer_update_weather = 1;
+
+void update_brightness()
+{
+    if( DEBUG_BRIGHTNESS )
+    {
+        brightness = fabs( sin( timeinfo->tm_sec / 10.0 ) );
+    }
+    else
+    {
+        char buffer[16];
+        FILE* f = fopen( LIGHTSENSOR_FILE, "r" );
+        fgets( buffer, 16, f );
+        fclose( f );
+
+        brightness = atof( buffer ) / 120;
+        brightness = fmin( brightness, 1.0 );
+    }
+}
 
 static size_t write_curl_response( void* ptr, size_t size, size_t nmemb, void* stream )
 {
@@ -640,6 +661,8 @@ void draw_timestring( cairo_t* cr )
     double text_x, text_y;
     double time_width = 0;
 
+    cairo_set_source_rgba( cr, 0.0, 0.0, 0.0, (1.0 - brightness) * 0.95 );
+    cairo_paint( cr );
 
     cairo_t* tempcr = cairo_create( temp_surface );
     cairo_set_operator( tempcr, CAIRO_OPERATOR_SOURCE );
@@ -650,6 +673,7 @@ void draw_timestring( cairo_t* cr )
 
     cairo_set_source_surface( cr, temp_surface, 0, 0 );
     cairo_paint( cr );
+
 
     /*
      * This part draws the background rectangles
@@ -757,6 +781,7 @@ gboolean refresh_clock(gpointer data)
     else
         timer_update_astronomy = 0;
 
+    update_brightness();
 
     weather_update_timer--;
     if( weather_update_timer < 0 )
